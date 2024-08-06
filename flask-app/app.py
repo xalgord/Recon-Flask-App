@@ -7,7 +7,7 @@ app = Flask(__name__)
 
 # Define your upload folder and script path
 UPLOAD_FOLDER = '/root/uploads'
-SCRIPT_PATH = '/root/auto3.sh'
+SCRIPT_PATH = '/root/auto.sh'
 OUTPUT_DIR = "/root/targets/all"
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 
