@@ -56,7 +56,7 @@ echo -e "${BLUE}-----------------------------------------"
 echo -e "${GREEN}Running HTTPX on subs.txt...${NC}"
 echo -e "${BLUE}-----------------------------------------${NC}"
 
-httpx -t 150 -sc -title -cl -probe -l subs.txt | grep -v "FAILED" > live.txt
+httpx -t 175 -rl 200 -sc -title -cl -probe -l subs.txt | grep -v "FAILED" > live.txt
 cat live.txt | anew juicy-live.txt | sed 's|^[^/]*//||' | cut -d '/' -f 1 | cut -d " " -f 1 > new.txt
 
 # Extracting important subdomains
@@ -90,7 +90,7 @@ echo -e "${BLUE}-----------------------------------------${NC}"
 # 	ffuf -c -ac -w /root/lists/dirsearch.txt -mc 200 -rate 100 -recursion -r -u "https://$subdomain/FUZZ" >> "$ffuf_dir/result.txt"
 # done
 
-dirsearch -l juice_subs.txt --config ~/.config/dirsearch/config.ini -t 100 --skip-on-status 429 > "dirsearch.txt"
+dirsearch -l juice_subs.txt --config ~/.config/dirsearch/config.ini -t 150 --skip-on-status 429 > "dirsearch.txt"
 
 echo -e "${BLUE}-----------------------------------------"
 echo -e "${GREEN}Checking for XSS...${NC}"
