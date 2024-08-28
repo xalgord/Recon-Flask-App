@@ -1,16 +1,13 @@
 #!/bin/bash
 
-# Script to automate bug bounty reconnaissance and vulnerability scanning
-# Only processes domains with new or changed content (status codes, titles, etc.)
-
 # Usage: ./bounty_script.sh domains.txt
 
-# File containing list of domains
-filename="$1"
-domains_file=$(sort -R "$filename")
+# Input file containing the list of domains
+input_file="$1"
+shuffled_domains=$(shuf "$input_file")
 
-# Define directories
-base_dir="/root/targets/$filename"
+# Directory setup
+base_dir="/root/targets/$(basename "$input_file" .txt)"
 recon_dir="$base_dir/recon"
 output_dir="$base_dir/output"
 old_data_dir="$base_dir/old_data"
@@ -30,7 +27,7 @@ NC='\033[0m' # No Color
 trap "echo -e '${YELLOW}Skipping current command...${NC}'" SIGINT
 trap "echo -e '${RED}Script stopped. Exiting...${NC}'; exit 1" SIGTSTP
 
-# Check if required tools are installed
+# Ensure all required tools are installed
 required_tools=("assetfinder" "curl" "subfinder" "findomain" "httpx" "anew" "gf" "uro" "kxss" "naabu" "nuclei" "gau" "katana" "ffuf" "notify" "python3")
 for tool in "${required_tools[@]}"; do
     if ! command -v "$tool" &> /dev/null; then
@@ -41,7 +38,6 @@ done
 
 echo -e "${YELLOW}Starting reconnaissance and vulnerability scanning...${NC}"
 
-# Initialize counters for the summary
 total_domains=0
 total_new_or_changed=0
 total_live_urls=0
@@ -50,100 +46,85 @@ total_vulnerabilities=0
 total_xss_endpoints=0
 total_discovered_directories=0
 
-# Loop through each domain in the file
-for domain in $domains_file; do
-    echo -e "${BLUE}Processing domain: $domain${NC}"
+# Loop through each domain
+for domain in $shuffled_domains; do
     total_domains=$((total_domains + 1))
-
+    echo -e "${BLUE}Processing domain: $domain${NC}"
+    
     domain_recon_dir="$recon_dir/$domain"
     mkdir -p "$domain_recon_dir"
 
     old_data_file="$old_data_dir/$domain-data.txt"
     new_data_file="$new_data_dir/$domain-data.txt"
-
+    
     # Subdomain Enumeration
     echo -e "${GREEN}Running subdomain enumeration...${NC}"
     subfinder -d "$domain" -all -recursive -nW -silent | anew "$new_data_file"
     findomain -t "$domain" -q | anew "$new_data_file"
-    echo -e "${YELLOW}Total subdomains enumerated: $(wc -l < "$new_data_file")${NC}"
 
-    # Run HTTPX on all current subdomains to capture changes in content, status codes, etc.
-    echo -e "${GREEN}Running DNS resolution and HTTP probing on all current subdomains...${NC}"
-    cat "$new_data_file" | httpx -t 170 -silent -status-code -title -location -tech-detect -nc > "$new_data_file"
-    echo -e "${YELLOW}Total live URLs found: $(wc -l < "$new_data_file")${NC}"
-    total_live_urls=$((total_live_urls + $(wc -l < "$new_data_file")))
+    # Deduplicate subdomains
+    sort -u "$new_data_file" -o "$new_data_file"
 
-    # Compare the new data file with the old data file to detect changes
-    new_or_changed_domains_count=0
+    # HTTPX for content changes (using -nc to suppress output)
+    echo -e "${GREEN}Running HTTP probing...${NC}"
+    cat "$new_data_file" | httpx -nc -t 170 -status-code -title -location -tech-detect > "$new_data_file"
+
+    # Check for new or changed domains
     if [ -f "$old_data_file" ]; then
-        # Count new or changed domains based on differences in content
-        new_or_changed_domains_count=$(diff "$old_data_file" "$new_data_file" | wc -l)
+        new_or_changed_domains_count=$(comm -13 <(sort "$old_data_file") <(sort "$new_data_file") | wc -l)
     else
-        # If no old data file, all current subdomains are considered as new/changed
         new_or_changed_domains_count=$(wc -l < "$new_data_file")
     fi
 
-    # Output the count of new or changed domains
-    echo -e "${YELLOW}Total new or changed domains: $new_or_changed_domains_count${NC}"
-    total_new_or_changed=$((total_new_or_changed + new_or_changed_domains_count))
-
-    # Save the new subdomains and data as old for future runs
-    mv "$new_data_file" "$old_data_file"
-
-    # Proceed with further processing if there are any new or changed domains
     if [ "$new_or_changed_domains_count" -gt 0 ]; then
-        echo -e "${GREEN}Proceeding with further tests for $domain...${NC}"
+        total_new_or_changed=$((total_new_or_changed + new_or_changed_domains_count))
+        echo -e "${YELLOW}Total new or changed subdomains: ${new_or_changed_domains_count}${NC}"
 
-        # Port Scanning using Naabu on changed subdomains
+        # Save the new data as old data for future comparison
+        cp "$new_data_file" "$old_data_file"
+
+        # Run Naabu (with suppressed output)
         echo -e "${GREEN}Running port scanning...${NC}"
-        cat "$old_data_file" | cut -d " " -f 1 | naabu -silent -o "$domain_recon_dir/naabu.txt"
-        echo -e "${YELLOW}Total open ports found: $(wc -l < "$domain_recon_dir/naabu.txt")${NC}"
-        total_open_ports=$((total_open_ports + $(wc -l < "$domain_recon_dir/naabu.txt")))
+        cat "$new_data_file" | naabu -silent > "$domain_recon_dir/naabu.txt"
+        open_ports=$(wc -l < "$domain_recon_dir/naabu.txt")
+        total_open_ports=$((total_open_ports + open_ports))
 
-        # Vulnerability Scanning using Nuclei with custom templates
-        echo -e "${GREEN}Running vulnerability scanning with Nuclei...${NC}"
-        nuclei -l "$old_data_file" -t ~/nuclei-templates/ -severity high,critical -c 50 -rl 250 -o "$domain_recon_dir/nuclei_results.txt"
+        # Run Nuclei (with suppressed output)
+        echo -e "${GREEN}Running vulnerability scanning...${NC}"
+        nuclei -l "$new_data_file" -t ~/nuclei-templates/ -severity high,critical -c 50 -rl 250 > "$domain_recon_dir/nuclei_results.txt"
+        vulnerabilities=$(wc -l < "$domain_recon_dir/nuclei_results.txt")
+        total_vulnerabilities=$((total_vulnerabilities + vulnerabilities))
         cat "$domain_recon_dir/nuclei_results.txt" | notify
-        echo -e "${YELLOW}Total vulnerabilities found: $(wc -l < "$domain_recon_dir/nuclei_results.txt")${NC}"
-        total_vulnerabilities=$((total_vulnerabilities + $(wc -l < "$domain_recon_dir/nuclei_results.txt")))
 
-        # Content Discovery using httpx and Dirsearch on all new or changed subdomains
-        echo -e "${GREEN}Running content discovery...${NC}"
-        cat "$old_data_file" | httpx -mc 403,404,401 | awk '{print $NF, $0}' | sort -u -k1,1 | cut -d' ' -f2- | cut -d " " -f 1 > "$domain_recon_dir/fuzz.txt"
-        dirsearch --config ~/.config/dirsearch/config.ini -t 100 -l "$domain_recon_dir/fuzz.txt" -o "$domain_recon_dir/dirsearch.txt"
-        echo -e "${YELLOW}Total URLs discovered by Dirsearch: $(wc -l < "$domain_recon_dir/dirsearch.txt")${NC}"
-        total_discovered_directories=$((total_discovered_directories + $(wc -l < "$domain_recon_dir/dirsearch.txt")))
-
-        # Parameter Discovery using GAU and KATANA
-        echo -e "${GREEN}Running parameter discovery...${NC}"
-        cat "$old_data_file" | gau --subs | anew "$domain_recon_dir/urls.txt"
-        cat "$old_data_file" | katana -mode passive -fs urls -silent -o "$domain_recon_dir/katana_results.txt"
-        cat "$domain_recon_dir/katana_results.txt" | anew "$domain_recon_dir/urls.txt"
-        echo -e "${YELLOW}Total URLs discovered by GAU and Katana: $(wc -l < "$domain_recon_dir/urls.txt")${NC}"
-
-        # XSS Testing with KXSS and GF Patterns
+        # Run KXSS and GF (with suppressed output)
         echo -e "${GREEN}Running XSS testing...${NC}"
-        cat "$domain_recon_dir/urls.txt" | gf xss | kxss | tee "$domain_recon_dir/xss_results.txt"
+        cat "$new_data_file" | gf xss | kxss > "$domain_recon_dir/xss_results.txt"
+        xss_endpoints=$(wc -l < "$domain_recon_dir/xss_results.txt")
+        total_xss_endpoints=$((total_xss_endpoints + xss_endpoints))
         cat "$domain_recon_dir/xss_results.txt" | notify
-        echo -e "${YELLOW}Total XSS endpoints identified: $(wc -l < "$domain_recon_dir/xss_results.txt")${NC}"
-        total_xss_endpoints=$((total_xss_endpoints + $(wc -l < "$domain_recon_dir/xss_results.txt")))
+
+        # Content Discovery using Dirsearch (with suppressed output)
+        echo -e "${GREEN}Running content discovery...${NC}"
+        cat "$new_data_file" | dirsearch -t 100 > "$domain_recon_dir/dirsearch.txt"
+        discovered_directories=$(wc -l < "$domain_recon_dir/dirsearch.txt")
+        total_discovered_directories=$((total_discovered_directories + discovered_directories))
     else
-        echo -e "${YELLOW}No significant changes detected for $domain. Skipping further tests.${NC}"
+        echo -e "${YELLOW}No new or changed subdomains for $domain. Skipping...${NC}"
     fi
 
-    # Save results to output directory
-    cp "$domain_recon_dir"/* "$output_dir/"
-
+    # Copy results to the output directory
+    cp -r "$domain_recon_dir"/* "$output_dir/$domain/"
 done
 
-# Script Summary
+# Summary of Results
+echo -e "${YELLOW}Summary of results:${NC}"
+echo -e "${BLUE}Total domains processed: ${total_domains}${NC}"
+echo -e "${BLUE}Total new or changed domains: ${total_new_or_changed}${NC}"
+echo -e "${BLUE}Total live URLs found: ${total_live_urls}${NC}"
+echo -e "${BLUE}Total open ports identified: ${total_open_ports}${NC}"
+echo -e "${BLUE}Total vulnerabilities found: ${total_vulnerabilities}${NC}"
+echo -e "${BLUE}Total XSS endpoints identified: ${total_xss_endpoints}${NC}"
+echo -e "${BLUE}Total directories discovered: ${total_discovered_directories}${NC}"
+
 echo -e "${GREEN}Reconnaissance and scanning completed!${NC}"
 echo -e "${YELLOW}Results saved in $output_dir${NC}"
-echo -e "${BLUE}Summary of results:${NC}"
-echo -e "${BLUE}Total domains processed: $total_domains${NC}"
-echo -e "${BLUE}Total new or changed domains: $total_new_or_changed${NC}"
-echo -e "${BLUE}Total live URLs found: $total_live_urls${NC}"
-echo -e "${BLUE}Total open ports identified: $total_open_ports${NC}"
-echo -e "${BLUE}Total vulnerabilities found: $total_vulnerabilities${NC}"
-echo -e "${BLUE}Total XSS endpoints identified: $total_xss_endpoints${NC}"
-echo -e "${BLUE}Total directories discovered: $total_discovered_directories${NC}"
