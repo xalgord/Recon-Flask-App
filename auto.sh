@@ -41,9 +41,19 @@ done
 
 echo -e "${YELLOW}Starting reconnaissance and vulnerability scanning...${NC}"
 
+# Initialize counters for the summary
+total_domains=0
+total_new_or_changed=0
+total_live_urls=0
+total_open_ports=0
+total_vulnerabilities=0
+total_xss_endpoints=0
+total_discovered_directories=0
+
 # Loop through each domain in the file
 for domain in $domains_file; do
     echo -e "${BLUE}Processing domain: $domain${NC}"
+    total_domains=$((total_domains + 1))
 
     domain_recon_dir="$recon_dir/$domain"
     mkdir -p "$domain_recon_dir"
@@ -61,6 +71,7 @@ for domain in $domains_file; do
     echo -e "${GREEN}Running DNS resolution and HTTP probing on all current subdomains...${NC}"
     cat "$new_data_file" | httpx -t 170 -silent -status-code -title -location -tech-detect -nc > "$new_data_file"
     echo -e "${YELLOW}Total live URLs found: $(wc -l < "$new_data_file")${NC}"
+    total_live_urls=$((total_live_urls + $(wc -l < "$new_data_file")))
 
     # Compare the new data file with the old data file to detect changes
     new_or_changed_domains_count=0
@@ -74,6 +85,7 @@ for domain in $domains_file; do
 
     # Output the count of new or changed domains
     echo -e "${YELLOW}Total new or changed domains: $new_or_changed_domains_count${NC}"
+    total_new_or_changed=$((total_new_or_changed + new_or_changed_domains_count))
 
     # Save the new subdomains and data as old for future runs
     mv "$new_data_file" "$old_data_file"
@@ -86,18 +98,21 @@ for domain in $domains_file; do
         echo -e "${GREEN}Running port scanning...${NC}"
         cat "$old_data_file" | cut -d " " -f 1 | naabu -silent -o "$domain_recon_dir/naabu.txt"
         echo -e "${YELLOW}Total open ports found: $(wc -l < "$domain_recon_dir/naabu.txt")${NC}"
+        total_open_ports=$((total_open_ports + $(wc -l < "$domain_recon_dir/naabu.txt")))
 
         # Vulnerability Scanning using Nuclei with custom templates
         echo -e "${GREEN}Running vulnerability scanning with Nuclei...${NC}"
         nuclei -l "$old_data_file" -t ~/nuclei-templates/ -severity high,critical -c 50 -rl 250 -o "$domain_recon_dir/nuclei_results.txt"
         cat "$domain_recon_dir/nuclei_results.txt" | notify
         echo -e "${YELLOW}Total vulnerabilities found: $(wc -l < "$domain_recon_dir/nuclei_results.txt")${NC}"
+        total_vulnerabilities=$((total_vulnerabilities + $(wc -l < "$domain_recon_dir/nuclei_results.txt")))
 
         # Content Discovery using httpx and Dirsearch on all new or changed subdomains
         echo -e "${GREEN}Running content discovery...${NC}"
         cat "$old_data_file" | httpx -mc 403,404,401 | awk '{print $NF, $0}' | sort -u -k1,1 | cut -d' ' -f2- | cut -d " " -f 1 > "$domain_recon_dir/fuzz.txt"
         dirsearch --config ~/.config/dirsearch/config.ini -t 100 -l "$domain_recon_dir/fuzz.txt" -o "$domain_recon_dir/dirsearch.txt"
         echo -e "${YELLOW}Total URLs discovered by Dirsearch: $(wc -l < "$domain_recon_dir/dirsearch.txt")${NC}"
+        total_discovered_directories=$((total_discovered_directories + $(wc -l < "$domain_recon_dir/dirsearch.txt")))
 
         # Parameter Discovery using GAU and KATANA
         echo -e "${GREEN}Running parameter discovery...${NC}"
@@ -111,6 +126,7 @@ for domain in $domains_file; do
         cat "$domain_recon_dir/urls.txt" | gf xss | kxss | tee "$domain_recon_dir/xss_results.txt"
         cat "$domain_recon_dir/xss_results.txt" | notify
         echo -e "${YELLOW}Total XSS endpoints identified: $(wc -l < "$domain_recon_dir/xss_results.txt")${NC}"
+        total_xss_endpoints=$((total_xss_endpoints + $(wc -l < "$domain_recon_dir/xss_results.txt")))
     else
         echo -e "${YELLOW}No significant changes detected for $domain. Skipping further tests.${NC}"
     fi
@@ -120,5 +136,14 @@ for domain in $domains_file; do
 
 done
 
+# Script Summary
 echo -e "${GREEN}Reconnaissance and scanning completed!${NC}"
 echo -e "${YELLOW}Results saved in $output_dir${NC}"
+echo -e "${BLUE}Summary of results:${NC}"
+echo -e "${BLUE}Total domains processed: $total_domains${NC}"
+echo -e "${BLUE}Total new or changed domains: $total_new_or_changed${NC}"
+echo -e "${BLUE}Total live URLs found: $total_live_urls${NC}"
+echo -e "${BLUE}Total open ports identified: $total_open_ports${NC}"
+echo -e "${BLUE}Total vulnerabilities found: $total_vulnerabilities${NC}"
+echo -e "${BLUE}Total XSS endpoints identified: $total_xss_endpoints${NC}"
+echo -e "${BLUE}Total directories discovered: $total_discovered_directories${NC}"
