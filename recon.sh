@@ -32,10 +32,9 @@ NC='\033[0m' # No Color
 
 # Signal trapping
 trap "echo -e '${YELLOW}Skipping current command...${NC}'" SIGINT
-trap "echo -e '${RED}Script stopped. Exiting...${NC}'; exit 1" SIGTSTP
 
 # Ensure all required tools are installed
-required_tools=("assetfinder" "curl" "subfinder" "findomain" "httpx" "anew" "gf" "uro" "kxss" "naabu" "nuclei" "gau" "katana" "ffuf" "notify" "python3")
+required_tools=("assetfinder" "curl" "subfinder" "findomain" "httpx" "anew" "gf" "uro" "kxss" "naabu" "nuclei" "gau" "katana" "notify" "python3" "feroxbuster")
 for tool in "${required_tools[@]}"; do
     if ! command -v "$tool" &>/dev/null; then
         echo -e "${RED}Error: $tool is not installed. Please install it and try again.${NC}"
@@ -52,6 +51,7 @@ total_open_ports=0
 total_vulnerabilities=0
 total_xss_endpoints=0
 total_discovered_directories=0
+total_JS_files=0
 
 # Loop through each domain
 for domain in $shuffled_domains; do
@@ -108,7 +108,7 @@ for domain in $shuffled_domains; do
 
         # Run Nuclei on new or changed domains
         echo -e "${GREEN}Running vulnerability scanning...${NC}"
-        nuclei -l "$new_or_changed_file.filtered" -t ~/nuclei-templates/ -severity high,critical -c 50 -rl 250 -o "$domain_recon_dir/nuclei-results.txt"
+        nuclei -l "$new_or_changed_file.filtered" -t ~/nuclei-templates/http -severity high,critical -o "$domain_recon_dir/nuclei-results.txt"
         vulnerabilities=$(wc -l <"$domain_recon_dir/nuclei-results.txt")
         total_vulnerabilities=$((total_vulnerabilities + vulnerabilities))
         cat "$domain_recon_dir/nuclei-results.txt" | notify
@@ -120,11 +120,17 @@ for domain in $shuffled_domains; do
         total_xss_endpoints=$((total_xss_endpoints + xss_endpoints))
         cat "$domain_recon_dir/xss-results.txt" | notify
 
-        # Content Discovery using Dirsearch (with suppressed output) on new or changed domains
+        # Content Discovery using Feroxbuster (with suppressed output) on new or changed domains
         echo -e "${GREEN}Running content discovery...${NC}"
-        dirsearch -l "$new_or_changed_file.filtered" --config ~/.config/dirsearch/config.ini -t 100 -o "$domain_recon_dir/dirsearch-results.txt"
-        discovered_directories=$(wc -l <"$domain_recon_dir/dirsearch-results.txt")
+        cat "$new_or_changed_file.filtered" | feroxbuster --stdin --silent -s 200 --no-recursion -k --random-agent --no-state -r -W 0 -w ~/lists/dirsearch.txt --parallel 10 -o "$domain_recon_dir/feroxbuster-results.txt"
+        discovered_directories=$(wc -l <"$domain_recon_dir/feroxbuster-results.txt")
         total_discovered_directories=$((total_discovered_directories + discovered_directories))
+
+         # JavaScript File Extraction using Katana
+        echo -e "${GREEN}Running Katana to extract JavaScript files...${NC}"
+        katana -list "$new_or_changed_file.filtered" -silent -jc -d 2 | grep "\.js" | uniq > "$domain_recon_dir/katana-results.txt"
+        JS_files=$(wc -l <"$domain_recon_dir/katana-results.txt")
+        total_JS_files=$((total_JS_files + JS_files))
 
         # Copy results to the output directory
         if [ -d "$domain_recon_dir" ] && [ "$(ls -A "$domain_recon_dir")" ]; then
@@ -147,6 +153,7 @@ echo -e "${BLUE}Total open ports identified: ${total_open_ports}${NC}"
 echo -e "${BLUE}Total vulnerabilities found: ${total_vulnerabilities}${NC}"
 echo -e "${BLUE}Total XSS endpoints identified: ${total_xss_endpoints}${NC}"
 echo -e "${BLUE}Total directories discovered: ${total_discovered_directories}${NC}"
+echo -e "${BLUE}Total JS files found: ${total_JS_files}${NC}"
 
 echo -e "${GREEN}Reconnaissance and scanning completed!${NC}"
 echo -e "${YELLOW}Results saved in $output_dir${NC}"
